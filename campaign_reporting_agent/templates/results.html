@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run results -- Campaign Reporting Agent</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1c1e26;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #4338ca;
+    --accent-soft: #eef2ff;
+    --danger: #b42318;
+    --danger-soft: #fef2f1;
+    --ok: #067647;
+    --ok-soft: #ecfdf3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14151a;
+      --card: #1e2029;
+      --text: #eceef2;
+      --muted: #9aa0ac;
+      --border: #2e313c;
+      --accent: #818cf8;
+      --accent-soft: #262a44;
+      --danger: #f97066;
+      --danger-soft: #2a1a1a;
+      --ok: #32d583;
+      --ok-soft: #142e22;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 2.5rem 1rem;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 1.25rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .card h2 { font-size: 0.8rem; margin: 0 0 1rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .error-banner {
+    background: var(--danger-soft); color: var(--danger);
+    border-radius: 10px; padding: 1rem; font-size: 0.92rem; margin-bottom: 1.25rem;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+  th, td { padding: 0.55rem 0.5rem; text-align: left; }
+  thead th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+  tbody tr:not(:last-child) td { border-bottom: 1px solid var(--border); }
+  .pill { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--accent-soft); color: var(--accent); }
+  pre {
+    background: var(--accent-soft);
+    color: var(--text);
+    padding: 1rem;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin: 0;
+  }
+  .output-path code { background: var(--accent-soft); padding: 0.15rem 0.4rem; border-radius: 6px; font-size: 0.85rem; }
+  a.back {
+    display: inline-block;
+    margin-top: 0.5rem;
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.92rem;
+  }
+  a.back:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Run results</h1>
+
+  {% if error %}
+    <div class="error-banner">{{ error }}</div>
+  {% else %}
+    {% if result and result.match_summary %}
+    <div class="card">
+      <h2>Match summary</h2>
+      <table>
+        <thead><tr><th>Platform</th><th>Matched</th><th>Unmatched</th><th>Ambiguous</th><th>No report</th></tr></thead>
+        <tbody>
+        {% for platform, stats in result.match_summary.by_platform.items() %}
+        <tr>
+          <td>{{ platform }}</td>
+          <td><span class="pill ok">{{ stats.matched }}</span></td>
+          <td>{{ stats.unmatched }}</td>
+          <td>{{ stats.ambiguous }}</td>
+          <td>{{ stats.no_report }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <h2>Log</h2>
+      <pre>{% for line in logs %}{{ line }}
+{% endfor %}</pre>
+    </div>
+
+    {% if output_dir %}
+    <p class="output-path">Output files: <code>{{ output_dir }}</code></p>
+    {% endif %}
+  {% endif %}
+
+  <a class="back" href="{{ url_for('index') }}">&larr; Run again</a>
+</div>
+</body>
+</html>

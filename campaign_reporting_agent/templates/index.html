@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Campaign Reporting Agent</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1c1e26;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #4338ca;
+    --accent-hover: #3730a3;
+    --accent-soft: #eef2ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14151a;
+      --card: #1e2029;
+      --text: #eceef2;
+      --muted: #9aa0ac;
+      --border: #2e313c;
+      --accent: #818cf8;
+      --accent-hover: #a5b4fc;
+      --accent-soft: #262a44;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 2.5rem 1rem;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  .eyebrow { color: var(--muted); font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 0.3rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 1.75rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .card h2 {
+    font-size: 0.95rem;
+    margin: 0 0 1rem;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .file-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .file-row:last-child { border-bottom: none; }
+  .file-row label { font-size: 0.92rem; }
+  .file-row input[type=file] {
+    max-width: 220px;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  input[type=file]::file-selector-button {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: none;
+    border-radius: 6px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-right: 0.6rem;
+  }
+  input[type=file]::file-selector-button:hover { background: var(--accent); color: #fff; }
+  .toggle-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.55rem 0;
+  }
+  .toggle-row input { margin-top: 0.2rem; accent-color: var(--accent); width: 17px; height: 17px; cursor: pointer; }
+  .toggle-row .label { font-size: 0.94rem; font-weight: 500; cursor: pointer; }
+  .toggle-row .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.1rem; }
+  button.run {
+    width: 100%;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  button.run:hover { background: var(--accent-hover); }
+  .footnote { text-align: center; color: var(--muted); font-size: 0.8rem; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">Paid Social Tracker</p>
+  <h1>Campaign Reporting Agent</h1>
+
+  {% if not configured %}
+  <div class="card" style="border-color:#d97706;">
+    <h2 style="color:#d97706;">Setup needed</h2>
+    <p style="margin:0;font-size:0.9rem;">This machine hasn't been connected to a spreadsheet yet. Run the CLI once with <code>--spreadsheet-id</code> and <code>--sheets-credentials</code> to set it up, then this page will work.</p>
+  </div>
+  {% endif %}
+
+  <form action="{{ url_for('run') }}" method="post" enctype="multipart/form-data">
+    <div class="card">
+      <h2>Platform reports</h2>
+      <div class="file-row"><label for="meta">Meta</label><input type="file" id="meta" name="meta"></div>
+      <div class="file-row"><label for="linkedin">LinkedIn</label><input type="file" id="linkedin" name="linkedin"></div>
+      <div class="file-row"><label for="google_ads">Google Ads</label><input type="file" id="google_ads" name="google_ads"></div>
+      <div class="file-row"><label for="taboola">Taboola</label><input type="file" id="taboola" name="taboola"></div>
+      <div class="file-row"><label for="stackadapt">StackAdapt</label><input type="file" id="stackadapt" name="stackadapt"></div>
+    </div>
+
+    <div class="card">
+      <h2>Actions</h2>
+      <div class="toggle-row">
+        <input type="checkbox" name="write_to_sheet" id="write_to_sheet">
+        <div>
+          <label class="label" for="write_to_sheet">Write Spent / Impressions / Clicks to the sheet</label>
+        </div>
+      </div>
+      <div class="toggle-row">
+        <input type="checkbox" name="update_goal_hits" id="update_goal_hits">
+        <div>
+          <label class="label" for="update_goal_hits">Update Goal Hits from Pressboard</label>
+          <div class="hint">Logs into Pressboard automatically -- can take a few minutes. Every eligible campaign gets a value or "N/A" -- nothing is left blank.</div>
+        </div>
+      </div>
+    </div>
+
+    <button class="run" type="submit">Run</button>
+  </form>
+  <p class="footnote">Leaving both actions unchecked just produces local report files -- nothing is written anywhere.</p>
+</div>
+</body>
+</html>

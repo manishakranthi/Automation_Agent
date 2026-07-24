@@ -1,0 +1,20 @@
+secrets/
+output/
+output*/
+__pycache__/
+*.pyc
+.env
+agent_config.json
+agent-503217-50f2b8e1b04c.json
+uploads/
+.claude/
+
+# Reference-only Sema4/PaceT material -- not part of the working project;
+# contains its own duplicate .env credentials and a large binary.
+PaceT/
+
+# Sample/working campaign data files dropped at the project root (ad spend
+# and performance data -- not something to publish, and files here get
+# swapped out between runs anyway).
+/*.csv
+/*.xlsx
