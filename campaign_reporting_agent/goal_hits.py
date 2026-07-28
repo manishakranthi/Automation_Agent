@@ -9,6 +9,8 @@ the write target.
 """
 
 import csv
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import studiostack
@@ -21,6 +23,7 @@ def run_goal_hits_update(
     dotenv_path: str = ".env",
     no_data_marker="N/A",
     on_progress=None,
+    concurrency: int = 6,
 ) -> tuple:
     """Returns (updates, log_rows).
 
@@ -32,6 +35,11 @@ def run_goal_hits_update(
     on_progress: optional callable(str), invoked before/after each group so a
     caller (CLI or the Flask UI) can surface live status during what can be a
     multi-minute run.
+
+    concurrency: number of Goal Hits lookups run in parallel. Each lookup is
+    network-bound (a handful of StudioStack API calls per group), so this is
+    the main lever for wall-clock time -- keep it modest to stay polite to
+    StudioStack's API rather than maximizing raw throughput.
     """
     notify = on_progress or (lambda _msg: None)
     studiostack.load_dotenv(Path(dotenv_path))
@@ -48,16 +56,34 @@ def run_goal_hits_update(
     updates = []
     log_rows = []
     claimed_targets = {}  # (campaign_id, goal_title) -> group description that already got this value
+    total = len(groups)
     with studiostack.PressboardClient(headless=headless) as client:
-        notify(f"Logged in. Looking up {len(groups)} Goal Hits group(s)...")
-        for index, group in enumerate(groups, start=1):
-            notify(f"[{index}/{len(groups)}] {group.campaign_name} ({group.goal})")
-            try:
-                value, meta = client.goal_hits_for_group(group)
-            except Exception as exc:  # noqa: BLE001
-                value = None
-                meta = {"status": "error", "error": str(exc)}
+        notify(f"Logged in. Looking up {total} Goal Hits group(s)...")
 
+        def fetch(group):
+            try:
+                return client.goal_hits_for_group(group)
+            except Exception as exc:  # noqa: BLE001
+                return None, {"status": "error", "error": str(exc)}
+
+        # Fetched concurrently (network-bound, and StudioStack API responses
+        # are independent per group), but claim resolution/logging below
+        # stays a single sequential pass in the ORIGINAL group order so which
+        # duplicate "wins" a shared Pressboard target stays deterministic --
+        # exactly as it was in the sequential version.
+        results = [None] * total
+        completed = 0
+        completed_lock = threading.Lock()
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
+            future_to_index = {executor.submit(fetch, group): i for i, group in enumerate(groups)}
+            for future in as_completed(future_to_index):
+                results[future_to_index[future]] = future.result()
+                with completed_lock:
+                    completed += 1
+                    notify(f"[{completed}/{total}] fetching Goal Hits...")
+
+        for index, (group, (value, meta)) in enumerate(zip(groups, results), start=1):
+            notify(f"[{index}/{total}] {group.campaign_name} ({group.goal})")
             if value is not None:
                 # Two DIFFERENT tracker groups (different merge cells -- not
                 # platform siblings under the same cell, which is expected

@@ -23,10 +23,14 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
+
+import requests
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
@@ -342,6 +346,19 @@ class PressboardClient:
         self.goal_cache: dict = {}
         self.cube_cache: dict = {}
         self.all_campaigns_cache = None
+        # Guards the caches above -- goal_hits.py fans lookups out across
+        # threads, so two groups can race to fill the same cache entry.
+        self._cache_lock = threading.Lock()
+        # Plain HTTP session for the actual data calls (api_get/cube_get):
+        # these are REST calls that only need the bearer token from login,
+        # not a browser context, and going through requests instead of
+        # page.evaluate() drops the per-call browser IPC round-trip and lets
+        # concurrent lookups actually run in parallel (page.evaluate() serializes
+        # on the single Playwright page). Pool sized for the thread-pool
+        # concurrency goal_hits.py uses.
+        self.http = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        self.http.mount("https://", adapter)
 
     def __enter__(self):
         self.playwright = sync_playwright().start()
@@ -418,15 +435,10 @@ class PressboardClient:
         last_exc = None
         for attempt in range(3):
             try:
-                return self.page.evaluate(
-                    """async ({url, token}) => {
-                        const response = await fetch(url, {headers: {Authorization: 'Bearer ' + token}});
-                        const text = await response.text();
-                        if (!response.ok) throw new Error(response.status + ' ' + url + ' ' + text.slice(0, 500));
-                        return text ? JSON.parse(text) : null;
-                    }""",
-                    {"url": url, "token": self.api_token},
-                )
+                resp = self.http.get(url, headers={"Authorization": "Bearer " + self.api_token}, timeout=30)
+                if not resp.ok:
+                    raise RuntimeError(f"{resp.status_code} {url} {resp.text[:500]}")
+                return resp.json() if resp.text else None
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 # A 4xx (bad/missing ID, auth) won't fix itself on retry;
@@ -441,8 +453,9 @@ class PressboardClient:
             self.cube_token = self.api_get(f"https://api.studiostack.com/{ORG_ID}/CubeJsAuth")["token"]
         clean_query = strip_nulls(query)
         cache_key = json.dumps(clean_query, sort_keys=True)
-        if cache_key in self.cube_cache:
-            cached = self.cube_cache[cache_key]
+        with self._cache_lock:
+            cached = self.cube_cache.get(cache_key)
+        if cached is not None:
             if isinstance(cached, Exception):
                 raise cached
             return cached
@@ -450,25 +463,25 @@ class PressboardClient:
         last_exc = None
         for attempt in range(3):
             try:
-                result = self.page.evaluate(
-                    """async ({query, token}) => {
-                        const url = 'https://analytics.studiostack.com/cubejs-api/v1/load?query='
-                            + encodeURIComponent(JSON.stringify(query)) + '&queryType=multi';
-                        const response = await fetch(url, {headers: {Authorization: token}});
-                        const text = await response.text();
-                        if (!response.ok) throw new Error(response.status + ' cube ' + text.slice(0, 500));
-                        return JSON.parse(text);
-                    }""",
-                    {"query": clean_query, "token": self.cube_token},
+                resp = self.http.get(
+                    "https://analytics.studiostack.com/cubejs-api/v1/load",
+                    params={"query": json.dumps(clean_query), "queryType": "multi"},
+                    headers={"Authorization": self.cube_token},
+                    timeout=30,
                 )
-                self.cube_cache[cache_key] = result
+                if not resp.ok:
+                    raise RuntimeError(f"{resp.status_code} cube {resp.text[:500]}")
+                result = resp.json()
+                with self._cache_lock:
+                    self.cube_cache[cache_key] = result
                 return result
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 if _is_permanent_cube_error(exc) or attempt == 2:
                     break
                 time.sleep(2)
-        self.cube_cache[cache_key] = last_exc
+        with self._cache_lock:
+            self.cube_cache[cache_key] = last_exc
         raise last_exc
 
     def all_campaigns(self) -> list:
@@ -477,24 +490,34 @@ class PressboardClient:
         so every tracker row can be scored locally against the full set
         instead of depending on Search/Suggestions' fragile requirement that
         the query align with the start of Pressboard's own campaign name."""
-        if self.all_campaigns_cache is None:
-            self.all_campaigns_cache = self.api_get(f"https://api.studiostack.com/{ORG_ID}/Campaigns")
-        return self.all_campaigns_cache
+        with self._cache_lock:
+            cached = self.all_campaigns_cache
+        if cached is None:
+            cached = self.api_get(f"https://api.studiostack.com/{ORG_ID}/Campaigns")
+            with self._cache_lock:
+                self.all_campaigns_cache = cached
+        return cached
 
     def campaign_summary(self, campaign_id: int) -> dict:
-        if campaign_id not in self.summary_cache:
-            self.summary_cache[campaign_id] = self.api_get(
-                f"https://api.studiostack.com/{ORG_ID}/CampaignSummaries/{campaign_id}"
-            )
-        return self.summary_cache[campaign_id]
+        with self._cache_lock:
+            cached = self.summary_cache.get(campaign_id)
+        if cached is None:
+            cached = self.api_get(f"https://api.studiostack.com/{ORG_ID}/CampaignSummaries/{campaign_id}")
+            with self._cache_lock:
+                self.summary_cache[campaign_id] = cached
+        return cached
 
     def story_goals(self, campaign_id: int, story_id: int) -> list:
         key = (campaign_id, story_id)
-        if key not in self.goal_cache:
-            self.goal_cache[key] = self.api_get(
+        with self._cache_lock:
+            cached = self.goal_cache.get(key)
+        if cached is None:
+            cached = self.api_get(
                 f"https://api.studiostack.com/{ORG_ID}/Campaigns/{campaign_id}/StoryRequests/{story_id}/Goals"
             )
-        return self.goal_cache[key]
+            with self._cache_lock:
+                self.goal_cache[key] = cached
+        return cached
 
     def best_campaign(self, group) -> tuple:
         keyword = advertiser_keyword(group.campaign_name)
@@ -631,14 +654,17 @@ class PressboardClient:
             return self._query_measure(measure, time_dimensions, filters)
 
         def _sum(measures):
-            total = 0.0
-            found = False
-            for m in measures or []:
-                value = self._query_measure(m, time_dimensions, filters)
-                if value is not None:
-                    total += value
-                    found = True
-            return total if found else None
+            measures = measures or []
+            if not measures:
+                return None
+            # Each measure is its own several-second Cube.js query (confirmed:
+            # some customMetrics sum up to 9 of these), and they're independent
+            # of each other -- querying them one at a time made a single goal's
+            # lookup dominate the whole run. Run them concurrently instead.
+            with ThreadPoolExecutor(max_workers=min(8, len(measures))) as pool:
+                values = list(pool.map(lambda m: self._query_measure(m, time_dimensions, filters), measures))
+            found_values = [v for v in values if v is not None]
+            return sum(found_values) if found_values else None
 
         numerator_total = _sum(custom_metric.get("numerator"))
         if numerator_total is None:

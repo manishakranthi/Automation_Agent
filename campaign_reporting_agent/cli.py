@@ -54,6 +54,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--goal-hits-headless", dest="goal_hits_headless", action="store_true", default=True, help="Run the Pressboard browser session headless (default).")
     parser.add_argument("--goal-hits-headful", dest="goal_hits_headless", action="store_false", help="Run the Pressboard browser session visibly, for debugging.")
     parser.add_argument("--goal-hits-limit", dest="goal_hits_limit", type=int, default=0, help="Optional limit on the number of Goal Hits groups processed, for test runs.")
+    parser.add_argument("--goal-hits-concurrency", dest="goal_hits_concurrency", type=int, default=6, help="Number of Goal Hits lookups to run in parallel (default 6). Higher is faster but more load on StudioStack's API.")
     parser.add_argument("--goal-hits-no-data-marker", dest="goal_hits_no_data_marker", default="N/A", help="Written to a Goal Hits cell when Pressboard has no usable value for that campaign, so nothing is left blank. Pass an empty string to leave such cells untouched instead.")
     parser.add_argument("--dotenv-path", dest="dotenv_path", default=".env", help="Path to the .env file holding PRESSBOARD_LOGIN_URL/USERNAME/PASSWORD")
 

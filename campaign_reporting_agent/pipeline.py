@@ -41,6 +41,7 @@ class PipelineOptions:
     goal_hits_headless: bool = True
     goal_hits_limit: int = 0
     goal_hits_no_data_marker: Optional[str] = "N/A"
+    goal_hits_concurrency: int = 6
     dotenv_path: str = ".env"
 
     pressboard_api_key: Optional[str] = None
@@ -309,6 +310,7 @@ def _run_goal_hits(options: PipelineOptions, pacing_rows, notify) -> dict:
         dotenv_path=options.dotenv_path,
         no_data_marker=options.goal_hits_no_data_marker,
         on_progress=notify,
+        concurrency=options.goal_hits_concurrency,
     )
     goal_hits.write_log(log_rows, os.path.join(options.output_dir, "goal_hits_update_log.csv"))
 
