@@ -365,6 +365,17 @@ class PressboardClient:
         self.browser = self._launch_browser()
         self.page = self.browser.new_page(viewport={"width": 1280, "height": 900})
         self._login_with_retry()
+        # Everything past this point (api_get/cube_get) uses self.http, not
+        # self.page -- Chromium is only needed to fill out the login form and
+        # read the resulting token out of localStorage. Closing it here frees
+        # its RAM (a real constraint on smaller hosting tiers) for the rest of
+        # what can be a multi-minute Goal Hits run instead of holding an idle
+        # browser open the whole time.
+        self.browser.close()
+        self.playwright.stop()
+        self.page = None
+        self.browser = None
+        self.playwright = None
         return self
 
     def _launch_browser(self):
