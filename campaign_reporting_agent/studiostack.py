@@ -64,7 +64,16 @@ GOAL_WORD_NOISE_PARTS = {
 # ("Michigan") without a dedicated multi-word rule.
 GENERIC_STOPWORDS = {
     "the", "of", "and", "via", "for", "a", "an",
-    "university", "college", "institute", "custom", "content", "article",
+    "university", "college", "institute", "custom", "content", "article", "articles",
+    # Generic ad-industry/marketing-process terms that recur across many
+    # unrelated Pressboard campaigns -- confirmed real false-positive cases:
+    # "campaign" alone matched BASF to "Range Rover ... Brand Campaign"
+    # (score 0.664, zero real connection), "sponsorship" alone matched
+    # Cadillac to "Eli Lilly ... TAF Sponsorship", "rfi" alone matched
+    # Contentful to a Merck campaign. None of these identify WHO the
+    # advertiser is, so they must never be the sole basis for a match.
+    "campaign", "campaigns", "sponsorship", "sponsor", "sponsored", "brand",
+    "branding", "rfi", "rfp", "media", "event", "events",
 }
 
 LEADING_NOISE_PARTS = EPISODE_NOISE_PARTS | FORMAT_NOISE_PARTS | GOAL_WORD_NOISE_PARTS | GENERIC_STOPWORDS
@@ -131,6 +140,27 @@ def _normalize_goal_text(text) -> str:
     return " ".join(tokens)
 
 
+# Creative-format words ("carousel", "video", "audio", "static", ...) are
+# noise for campaign-NAME/advertiser-keyword purposes but they're often the
+# ONLY thing that distinguishes two stories within one Pressboard campaign
+# (e.g. "Social Carousel" vs "Article Promotion on Social" -- confirmed real
+# case: both had a goal literally titled "Social Impressions" with the same
+# targetGoal, so nothing else discriminates them). Stripping "carousel" here
+# made story_match_score blind to the one signal that would correctly pick
+# the Carousel-specific story instead of silently landing on a different,
+# unrelated one.
+_STORY_NOISE_TOKENS = NOISE_TOKENS - FORMAT_NOISE_PARTS
+
+
+def _normalize_story_text(text) -> str:
+    text = (text or "").lower().replace("&", " and ")
+    text = re.sub(r"[_\-/|]+", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r"\b20\d{2}\b|\b\d{2}\b|\b\d+\b", " ", text)
+    tokens = [t for t in text.split() if t and t not in _STORY_NOISE_TOKENS]
+    return " ".join(tokens)
+
+
 def advertiser_keyword(campaign_name: str) -> str:
     parts = [p.strip() for p in re.split(r"[_\s]+", campaign_name) if p.strip()]
     for part in parts:
@@ -157,7 +187,21 @@ def score_campaign(tracker_name: str, candidate_name: str) -> float:
     candidate_norm = normalize(candidate_name)
     tracker_tokens = set(tracker_norm.split())
     candidate_tokens = set(candidate_norm.split())
-    overlap = len(tracker_tokens & candidate_tokens) / max(1, len(tracker_tokens | candidate_tokens))
+    shared_tokens = tracker_tokens & candidate_tokens
+
+    # Hard gate: two campaigns must share at least one real (non-noise) word
+    # to be considered related at all. Without this, an advertiser that
+    # simply isn't in Pressboard yet (e.g. "Hermes") can still score above
+    # threshold against a totally unrelated campaign purely from the
+    # date/quarter bonuses below (confirmed real case: 0 shared words, but
+    # both happened to be dated 2026 and both contained "Q3" as a substring
+    # -- scored 0.48, comfortably above the 0.34 threshold). Every genuine
+    # match observed in production shares at least one real word; this gate
+    # costs nothing for those and blocks pure date-coincidence false matches.
+    if not shared_tokens:
+        return 0.0
+
+    overlap = len(shared_tokens) / max(1, len(tracker_tokens | candidate_tokens))
     ratio = SequenceMatcher(None, tracker_norm, candidate_norm).ratio()
 
     score = (0.65 * ratio) + (0.35 * overlap)
@@ -243,8 +287,8 @@ def story_match_score(tracker_name: str, story_request: dict) -> float:
             story_request.get("description"),
         )
     )
-    tracker_norm = normalize(tracker_name)
-    story_norm = normalize(story_text)
+    tracker_norm = _normalize_story_text(tracker_name)
+    story_norm = _normalize_story_text(story_text)
     if not story_norm:
         return 0.0
     tracker_tokens = set(tracker_norm.split())
@@ -538,29 +582,71 @@ class PressboardClient:
         for goal in sorted(candidate_goals, key=lambda g: g.get("order", 999)):
             meta["pressboard_goal_title"] = goal.get("title", "")
             meta["story_match_score"] = round(story_score, 3)
-            query = {
-                "measures": [goal["measure"]],
-                "timeDimensions": goal.get("timeDimensions") or [],
-                "filters": (goal.get("filters") or []) + (goal.get("otherFilters") or []),
-            }
+            time_dimensions = goal.get("timeDimensions") or []
+            filters = (goal.get("filters") or []) + (goal.get("otherFilters") or [])
             try:
-                data = self.cube_get(query)
+                value = self._resolve_goal_value(goal, time_dimensions, filters)
             except Exception as exc:  # noqa: BLE001
                 cube_errors.append(f"{goal.get('measure')}: {exc}")
                 continue
-            rows = (((data.get("results") or [{}])[0]).get("data") or [])
-            if not rows:
+            if value is None:
                 continue
-            raw_value = rows[0].get(goal["measure"])
-            if raw_value in (None, ""):
-                continue
-            value = float(raw_value)
             meta["status"] = "updated"
             meta["pressboard_goal_measure"] = goal.get("measure", "")
             if cube_errors:
                 meta["cube_fallback_errors"] = " | ".join(cube_errors)
-            return int(value) if value.is_integer() else value, meta
+            return int(value) if float(value).is_integer() else value, meta
         meta["status"] = "no_cube_value"
         if cube_errors:
             meta["cube_errors"] = " | ".join(cube_errors)
         return None, meta
+
+    def _query_measure(self, measure: str, time_dimensions, filters):
+        """A single real Cube measure -- returns its numeric value, or None
+        if there's simply no data for it (not an error)."""
+        query = {"measures": [measure], "timeDimensions": time_dimensions, "filters": filters}
+        data = self.cube_get(query)
+        rows = (((data.get("results") or [{}])[0]).get("data") or [])
+        if not rows:
+            return None
+        raw_value = rows[0].get(measure)
+        if raw_value in (None, ""):
+            return None
+        return float(raw_value)
+
+    def _resolve_goal_value(self, goal: dict, time_dimensions, filters):
+        """Resolves a goal's delivered value. "CustomMetric.NN" is never a
+        real Cube measure (querying it directly is exactly what produces the
+        "Cube 'CustomMetric' not found for path" errors) -- it's Pressboard's
+        own composite metric, defined by a `customMetric` numerator (list of
+        real measures to sum) and an optional denominator (a second sum, for
+        a ratio metric like a CTR). The underlying measures often live in
+        different, unrelated Cubes (Google/Facebook/LinkedIn/TikTok/...) that
+        can't be joined in a single multi-measure query, so each is queried
+        separately and combined here.
+        """
+        measure = goal["measure"]
+        custom_metric = goal.get("customMetric")
+        if not (measure.startswith("CustomMetric.") and custom_metric):
+            return self._query_measure(measure, time_dimensions, filters)
+
+        def _sum(measures):
+            total = 0.0
+            found = False
+            for m in measures or []:
+                value = self._query_measure(m, time_dimensions, filters)
+                if value is not None:
+                    total += value
+                    found = True
+            return total if found else None
+
+        numerator_total = _sum(custom_metric.get("numerator"))
+        if numerator_total is None:
+            return None
+        denominator = custom_metric.get("denominator")
+        if not denominator:
+            return numerator_total
+        denominator_total = _sum(denominator)
+        if not denominator_total:
+            return None
+        return numerator_total / denominator_total

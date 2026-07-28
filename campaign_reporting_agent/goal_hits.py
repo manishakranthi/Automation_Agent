@@ -36,6 +36,11 @@ def run_goal_hits_update(
     notify = on_progress or (lambda _msg: None)
     studiostack.load_dotenv(Path(dotenv_path))
 
+    # Impressions-goal rows are deliberately skipped -- Impressions come
+    # from the ad platform reports (Meta/LinkedIn/etc.), not Pressboard, so
+    # there's nothing for a Pressboard lookup to add for these specifically.
+    groups = [g for g in groups if "impression" not in g.goal.lower()]
+
     if limit:
         groups = groups[:limit]
 

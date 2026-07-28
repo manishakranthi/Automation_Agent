@@ -73,7 +73,28 @@
     line-height: 1.5;
     margin: 0;
   }
-  .output-path code { background: var(--accent-soft); padding: 0.15rem 0.4rem; border-radius: 6px; font-size: 0.85rem; }
+  details.log-details { padding: 0; }
+  details.log-details summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 1.5rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  details.log-details summary::-webkit-details-marker { display: none; }
+  details.log-details summary::after {
+    content: "\25BE";
+    font-size: 0.9rem;
+    transition: transform 0.2s ease;
+  }
+  details.log-details[open] summary::after { transform: rotate(180deg); }
+  details.log-details pre { margin: 0 1.5rem 1.5rem; }
   a.back {
     display: inline-block;
     margin-top: 0.5rem;
@@ -112,15 +133,11 @@
     </div>
     {% endif %}
 
-    <div class="card">
-      <h2>Log</h2>
+    <details class="card log-details">
+      <summary>Log</summary>
       <pre>{% for line in logs %}{{ line }}
 {% endfor %}</pre>
-    </div>
-
-    {% if output_dir %}
-    <p class="output-path">Output files: <code>{{ output_dir }}</code></p>
-    {% endif %}
+    </details>
   {% endif %}
 
   <a class="back" href="{{ url_for('index') }}">&larr; Run again</a>
