@@ -19,7 +19,16 @@ from .pipeline import PipelineOptions, run_pipeline
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 
-PLATFORM_FIELDS = ("meta", "linkedin", "google_ads", "taboola", "stackadapt")
+# Form field names deliberately avoid strings like "google_ads"/"taboola" --
+# ad-blocker cosmetic filters match those in id/name attributes and hide the
+# row, even though the visible label text is unaffected.
+FORM_FIELD_TO_KEY = {
+    "meta": "meta",
+    "linkedin": "linkedin",
+    "platform_ga": "google_ads",
+    "platform_tb": "taboola",
+    "stackadapt": "stackadapt",
+}
 
 _runs_lock = threading.Lock()
 _runs = {}  # run_id -> {"status": "running"|"done"|"error", "messages": [...], "result": PipelineResult|None, "error": str|None, "output_dir": str|None}
@@ -69,12 +78,12 @@ def create_app() -> Flask:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         saved_paths = {}
-        for field in PLATFORM_FIELDS:
-            uploaded = request.files.get(field)
+        for form_field, key in FORM_FIELD_TO_KEY.items():
+            uploaded = request.files.get(form_field)
             if uploaded and uploaded.filename:
                 dest = run_dir / uploaded.filename
                 uploaded.save(dest)
-                saved_paths[field] = str(dest)
+                saved_paths[key] = str(dest)
 
         output_dir = BASE_DIR / "output" / f"webui_{run_id}"
 
