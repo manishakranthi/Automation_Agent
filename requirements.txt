@@ -5,3 +5,4 @@ google-api-python-client>=2.100
 google-auth>=2.23
 playwright>=1.45.0
 Flask>=3.0
+gunicorn>=21.2
