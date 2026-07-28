@@ -1,0 +1,17 @@
+secrets/
+output/
+output*/
+__pycache__/
+*.pyc
+.env
+agent_config.json
+agent-503217-50f2b8e1b04c.json
+uploads/
+run_state/
+.claude/
+.git/
+
+PaceT/
+
+/*.csv
+/*.xlsx
