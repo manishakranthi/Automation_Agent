@@ -7,6 +7,7 @@ __pycache__/
 agent_config.json
 agent-503217-50f2b8e1b04c.json
 uploads/
+run_state/
 .claude/
 
 # Reference-only Sema4/PaceT material -- not part of the working project;

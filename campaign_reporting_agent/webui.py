@@ -5,8 +5,17 @@ local-only tool: no auth, not meant to be exposed beyond localhost.
 Runs happen in a background thread (a Goal Hits pass can take several
 minutes) while the browser polls /progress/<run_id>/data for live status,
 then lands on /results/<run_id> once the run finishes.
+
+Run state is persisted to a JSON file per run (RUN_STATE_DIR) rather than
+kept in an in-memory dict -- on a host like Render, a long Goal Hits pass
+(headless Chromium + everything else) can get a worker process recycled or
+land a later poll on a different worker/instance than the one that started
+the run; an in-memory dict is invisible across that boundary and every next
+poll 404s forever. A JSON file on the shared container filesystem survives it.
 """
 
+import dataclasses
+import json
 import threading
 import uuid
 from pathlib import Path
@@ -18,6 +27,7 @@ from .pipeline import PipelineOptions, run_pipeline
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
+RUN_STATE_DIR = BASE_DIR / "run_state"
 
 # Form field names deliberately avoid strings like "google_ads"/"taboola" --
 # ad-blocker cosmetic filters match those in id/name attributes and hide the
@@ -30,25 +40,57 @@ FORM_FIELD_TO_KEY = {
     "stackadapt": "stackadapt",
 }
 
-_runs_lock = threading.Lock()
-_runs = {}  # run_id -> {"status": "running"|"done"|"error", "messages": [...], "result": PipelineResult|None, "error": str|None, "output_dir": str|None}
+# Guards the read-modify-write below -- goal_hits.py's thread pool can call
+# on_progress (-> _append_message) from several worker threads at once for
+# the same run_id.
+_state_lock = threading.Lock()
+
+
+def _state_path(run_id):
+    return RUN_STATE_DIR / f"{run_id}.json"
+
+
+def _read_state(run_id):
+    path = _state_path(run_id)
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None  # a read raced an in-flight write; caller treats this as "not ready yet"
+
+
+def _write_state(run_id, state):
+    RUN_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _state_path(run_id)
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    tmp.replace(path)  # atomic on the same filesystem -- no reader ever sees a half-written file
 
 
 def _append_message(run_id, message):
-    with _runs_lock:
-        _runs[run_id]["messages"].append(message)
+    with _state_lock:
+        state = _read_state(run_id)
+        state["messages"].append(message)
+        _write_state(run_id, state)
 
 
 def _execute(run_id, options):
     try:
         result = run_pipeline(options, on_progress=lambda msg: _append_message(run_id, msg))
-        with _runs_lock:
-            _runs[run_id]["status"] = "done"
-            _runs[run_id]["result"] = result
+        with _state_lock:
+            state = _read_state(run_id)
+            state["status"] = "done"
+            state["result"] = dataclasses.asdict(result)
+            _write_state(run_id, state)
     except Exception as exc:  # noqa: BLE001
-        with _runs_lock:
-            _runs[run_id]["status"] = "error"
-            _runs[run_id]["error"] = str(exc)
+        with _state_lock:
+            state = _read_state(run_id)
+            state["status"] = "error"
+            state["error"] = str(exc)
+            _write_state(run_id, state)
 
 
 def create_app() -> Flask:
@@ -104,43 +146,39 @@ def create_app() -> Flask:
             output_dir=str(output_dir),
         )
 
-        with _runs_lock:
-            _runs[run_id] = {"status": "running", "messages": [], "result": None, "error": None, "output_dir": str(output_dir)}
+        _write_state(run_id, {"status": "running", "messages": [], "result": None, "error": None, "output_dir": str(output_dir)})
 
         threading.Thread(target=_execute, args=(run_id, options), daemon=True).start()
         return redirect(url_for("progress_page", run_id=run_id))
 
     @app.route("/progress/<run_id>", methods=["GET"])
     def progress_page(run_id):
-        with _runs_lock:
-            if run_id not in _runs:
-                abort(404)
+        if _read_state(run_id) is None:
+            abort(404)
         return render_template("progress.html", run_id=run_id)
 
     @app.route("/progress/<run_id>/data", methods=["GET"])
     def progress_data(run_id):
-        with _runs_lock:
-            run = _runs.get(run_id)
-            if run is None:
-                abort(404)
-            return jsonify({"status": run["status"], "messages": run["messages"]})
+        state = _read_state(run_id)
+        if state is None:
+            abort(404)
+        return jsonify({"status": state["status"], "messages": state["messages"]})
 
     @app.route("/results/<run_id>", methods=["GET"])
     def results_page(run_id):
-        with _runs_lock:
-            run = _runs.get(run_id)
-        if run is None:
+        state = _read_state(run_id)
+        if state is None:
             abort(404)
-        if run["status"] == "running":
+        if state["status"] == "running":
             return redirect(url_for("progress_page", run_id=run_id))
-        if run["status"] == "error":
-            return render_template("results.html", error=run["error"], logs=run["messages"], result=None, output_dir=None)
+        if state["status"] == "error":
+            return render_template("results.html", error=state["error"], logs=state["messages"], result=None, output_dir=None)
         return render_template(
             "results.html",
             error=None,
-            logs=run["result"].logs,
-            result=run["result"],
-            output_dir=run["output_dir"],
+            logs=state["result"]["logs"],
+            result=state["result"],
+            output_dir=state["output_dir"],
         )
 
     return app
